@@ -1,0 +1,1313 @@
+python app.py<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Shield Firewall</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Share+Tech+Mono&family=Exo+2:wght@300;400;500;600;700&display=swap">
+<!-- Load React FIRST -->
+<script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+<!-- Chart.js (much more reliable than Recharts with CDN) -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<!-- Babel LAST (it will compile the text/babel script tag below) -->
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body,#root{height:100%;background:#010d1a;color:#d0eeff;font-family:'Exo 2',sans-serif;overflow:hidden}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:#010d1a}
+::-webkit-scrollbar-thumb{background:#00d4ff33;border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:#00d4ff66}
+input,select,button{font-family:'Exo 2',sans-serif}
+@keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes slideIn{from{opacity:0;transform:translateX(-12px)}to{opacity:1;transform:translateX(0)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.35}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+@keyframes scanline{0%{top:-2px}100%{top:100%}}
+@keyframes ripple{0%{transform:scale(0.8);opacity:0.9}100%{transform:scale(2.8);opacity:0}}
+</style>
+</head>
+<body>
+<div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:'Orbitron',sans-serif;color:#00d4ff;font-size:14px;letter-spacing:3px">LOADING SMART SHIELD...</div></div>
+
+<script type="text/babel">
+/* ───────────────────────────────────────────────────────────
+   SMART SHIELD FIREWALL  –  React 18 + Chart.js
+─────────────────────────────────────────────────────────── */
+const { useState, useEffect, useRef, useCallback } = React;
+
+/* ── THEME ─────────────────────────────────────────────── */
+const C = {
+  bg0:'#010d1a', bg1:'rgba(0,16,34,0.97)', bg2:'rgba(0,28,56,0.65)', bg3:'rgba(0,40,80,0.4)',
+  b0:'rgba(0,212,255,0.1)', b1:'rgba(0,212,255,0.22)', b2:'rgba(0,212,255,0.45)',
+  cyan:'#00d4ff', green:'#00ff88', red:'#ff3355', orange:'#ff8800', purple:'#9d4edd', gold:'#ffd700',
+  text:'#d0eeff', dim:'rgba(208,238,255,0.55)', muted:'rgba(208,238,255,0.28)',
+};
+
+/* ── HELPERS ────────────────────────────────────────────── */
+const ri  = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+const rp  = arr  => arr[ri(0,arr.length-1)];
+const rb  = (p=0.5) => Math.random() < p;
+
+const SAMPLE_IPS = ['192.168.1.2','10.0.0.5','172.16.0.8','8.8.8.8','43.32.156.1','203.0.113.45','198.51.100.23','91.198.174.1'];
+const PROTOCOLS  = ['TCP','UDP','ICMP','HTTP','HTTPS','DNS','SSH','FTP'];
+const INFOS      = ['HTTP Request','DNS Query','Ping Request','HTTPS','SSH Connection','TLS Handshake','GET /index.html','POST /api/data','SYN Flood Detected','UDP Probe'];
+
+let _pid = 1;
+function genPacket() {
+  const allowed = rb(0.72);
+  const now = new Date();
+  return {
+    id: _pid++,
+    time: now.toLocaleTimeString('en-US',{hour12:false}),
+    srcIP: rp(SAMPLE_IPS),
+    dstIP: `${ri(1,254)}.${ri(0,254)}.${ri(0,254)}.${ri(0,254)}`,
+    proto: rp(PROTOCOLS),
+    info: rp(INFOS),
+    status: allowed ? 'Allowed' : 'Blocked',
+    bytes: ri(64,65535),
+  };
+}
+
+function genTrafficData(n=25) {
+  return Array.from({length:n}, (_,i) => {
+    const allowed = ri(700,3800), blocked = ri(80,900);
+    return { time:`${String(i).padStart(2,'0')}:00`, packets:allowed+blocked, allowed, blocked };
+  });
+}
+
+const PROTO_DATA = [
+  {name:'TCP',   value:45.2, color:'#00d4ff'},
+  {name:'UDP',   value:28.7, color:'#4ade80'},
+  {name:'ICMP',  value:15.3, color:'#ff8800'},
+  {name:'HTTP',  value:7.8,  color:'#9d4edd'},
+  {name:'Others',value:2.9,  color:'rgba(208,238,255,0.3)'},
+];
+
+const RULES_INIT = [
+  {id:1,name:'Allow Local Network',   src:'192.168.1.0/24', dst:'Any',            proto:'Any',         action:'Allow', priority:1, active:true},
+  {id:2,name:'Block Suspicious IPs',  src:'Any',            dst:'203.0.113.0/24', proto:'Any',         action:'Block', priority:2, active:true},
+  {id:3,name:'Allow DNS',             src:'Any',            dst:'8.8.8.8',        proto:'UDP',         action:'Allow', priority:3, active:true},
+  {id:4,name:'Block P2P Traffic',     src:'Any',            dst:'Any',            proto:'BitTorrent',  action:'Block', priority:4, active:false},
+  {id:5,name:'Allow HTTP/HTTPS',      src:'Any',            dst:'Any',            proto:'TCP:80,443',  action:'Allow', priority:5, active:true},
+  {id:6,name:'Block SSH Brute Force', src:'Any',            dst:'Any',            proto:'TCP:22',      action:'Block', priority:6, active:true},
+  {id:7,name:'Allow ICMP Ping',       src:'Any',            dst:'Any',            proto:'ICMP',        action:'Allow', priority:7, active:false},
+];
+
+const TOP_BLOCKED = [
+  {ip:'203.0.113.45',  hits:230, pct:100},
+  {ip:'198.51.100.23', hits:187, pct:81},
+  {ip:'43.32.32.156',  hits:164, pct:71},
+  {ip:'192.0.2.78',    hits:142, pct:62},
+  {ip:'203.0.113.10',  hits:98,  pct:43},
+];
+
+/* ── CHART.JS HELPERS ───────────────────────────────────── */
+const ChartDefaults = () => {
+  // Called once to set Chart.js global defaults
+  if (window.Chart) {
+    Chart.defaults.color = 'rgba(208,238,255,0.45)';
+    Chart.defaults.font.family = "'Share Tech Mono', monospace";
+    Chart.defaults.font.size = 10;
+  }
+};
+
+function useChartDestroy(ref) {
+  useEffect(() => {
+    return () => { if (ref.current) { ref.current.destroy(); ref.current = null; } };
+  }, []);
+}
+
+/* Area Chart using Chart.js */
+function AreaChart({ data, height = 180 }) {
+  const canvasRef = useRef(null);
+  const chartRef  = useRef(null);
+
+  useEffect(() => {
+    if (!canvasRef.current || !window.Chart) return;
+    if (chartRef.current) { chartRef.current.destroy(); }
+
+    const ctx = canvasRef.current.getContext('2d');
+
+    const gradC = ctx.createLinearGradient(0,0,0,height);
+    gradC.addColorStop(0,'rgba(0,212,255,0.3)');
+    gradC.addColorStop(1,'rgba(0,212,255,0)');
+
+    const gradR = ctx.createLinearGradient(0,0,0,height);
+    gradR.addColorStop(0,'rgba(255,51,85,0.2)');
+    gradR.addColorStop(1,'rgba(255,51,85,0)');
+
+    chartRef.current = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: data.map(d => d.time),
+        datasets: [
+          { label:'Allowed', data:data.map(d=>d.allowed), borderColor:'#00d4ff', backgroundColor:gradC, fill:true, tension:0.4, borderWidth:1.5, pointRadius:0, pointHoverRadius:4 },
+          { label:'Blocked', data:data.map(d=>d.blocked), borderColor:'#ff3355', backgroundColor:gradR, fill:true, tension:0.4, borderWidth:1.5, pointRadius:0, pointHoverRadius:4 },
+        ]
+      },
+      options: {
+        responsive:true, maintainAspectRatio:false, animation:false,
+        interaction:{ intersect:false, mode:'index' },
+        plugins:{
+          legend:{ display:false },
+          tooltip:{ backgroundColor:'rgba(1,13,26,0.95)', borderColor:'rgba(0,212,255,0.25)', borderWidth:1, titleColor:'#d0eeff', bodyColor:'rgba(208,238,255,0.7)', padding:10, titleFont:{family:"'Share Tech Mono'",size:10}, bodyFont:{family:"'Share Tech Mono'",size:10} }
+        },
+        scales:{
+          x:{ grid:{ color:'rgba(0,212,255,0.06)', drawBorder:false }, ticks:{ color:'rgba(208,238,255,0.4)', maxTicksLimit:8, font:{size:9} }, border:{display:false} },
+          y:{ grid:{ color:'rgba(0,212,255,0.06)', drawBorder:false }, ticks:{ color:'rgba(208,238,255,0.4)', font:{size:9} }, border:{display:false} }
+        }
+      }
+    });
+  }, [data]);
+
+  useChartDestroy(chartRef);
+  return <div style={{height}}><canvas ref={canvasRef}/></div>;
+}
+
+/* Donut Chart using Chart.js */
+function DonutChart({ data, size=130, centerLabel, centerSub='Total' }) {
+  const canvasRef = useRef(null);
+  const chartRef  = useRef(null);
+
+  useEffect(() => {
+    if (!canvasRef.current || !window.Chart) return;
+    if (chartRef.current) { chartRef.current.destroy(); }
+
+    chartRef.current = new Chart(canvasRef.current, {
+      type: 'doughnut',
+      data: {
+        labels: data.map(d => d.name),
+        datasets:[{ data:data.map(d=>d.value||d.hits||d.packets||d), backgroundColor:data.map(d=>d.color||d.fill), borderWidth:0, hoverOffset:3 }]
+      },
+      options: {
+        responsive:false, cutout:'65%', animation:{ duration:600 },
+        plugins:{
+          legend:{ display:false },
+          tooltip:{ backgroundColor:'rgba(1,13,26,0.95)', borderColor:'rgba(0,212,255,0.25)', borderWidth:1, titleColor:'#d0eeff', bodyColor:'rgba(208,238,255,0.7)', padding:10, callbacks:{label:(ctx)=>`${ctx.label}: ${ctx.parsed}%`} }
+        }
+      }
+    });
+  }, []);
+
+  useChartDestroy(chartRef);
+  return (
+    <div style={{position:'relative',width:size,height:size,flexShrink:0}}>
+      <canvas ref={canvasRef} width={size} height={size}/>
+      {centerLabel && (
+        <div style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',pointerEvents:'none'}}>
+          <div style={{fontFamily:"'Orbitron',sans-serif",fontSize:size>110?15:12,fontWeight:700,color:C.cyan,textShadow:`0 0 10px ${C.cyan}88`}}>{centerLabel}</div>
+          <div style={{fontSize:9,color:C.muted}}>{centerSub}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── SHARED UI COMPONENTS ───────────────────────────────── */
+const mono = {fontFamily:"'Share Tech Mono',monospace"};
+const orb  = {fontFamily:"'Orbitron',sans-serif"};
+
+function Badge({ status }) {
+  const ok = status==='Allowed'||status==='Allow'||status==='active';
+  const col = ok ? C.green : C.red;
+  return (
+    <span style={{background:`${col}18`,color:col,border:`1px solid ${col}33`,padding:'2px 9px',borderRadius:4,fontSize:10,fontWeight:700,...mono,letterSpacing:'0.5px',whiteSpace:'nowrap'}}>
+      {status.toUpperCase()}
+    </span>
+  );
+}
+
+function Toggle({ checked, onChange }) {
+  return (
+    <div onClick={()=>onChange(!checked)}
+      style={{width:42,height:24,borderRadius:12,background:checked?'rgba(0,255,136,0.15)':'rgba(255,255,255,0.07)',border:`1px solid ${checked?'rgba(0,255,136,0.4)':C.b0}`,position:'relative',cursor:'pointer',transition:'all 0.3s',flexShrink:0}}>
+      <div style={{position:'absolute',width:18,height:18,borderRadius:'50%',background:checked?C.green:'rgba(208,238,255,0.4)',top:2,left:checked?20:2,transition:'all 0.3s',boxShadow:checked?`0 0 8px ${C.green}`:'none'}}/>
+    </div>
+  );
+}
+
+function Card({ children, style={} }) {
+  return <div style={{background:C.bg1,border:`1px solid ${C.b0}`,borderRadius:12,padding:18,backdropFilter:'blur(12px)',transition:'border-color 0.2s',...style}}>{children}</div>;
+}
+
+function StatCard({ icon, label, value, sub, color='cyan', delta }) {
+  const col = color==='green'?C.green:color==='red'?C.red:color==='orange'?C.orange:C.cyan;
+  return (
+    <div style={{background:C.bg1,border:`1px solid ${C.b0}`,borderRadius:12,padding:18,flex:1,minWidth:145,boxShadow:`0 0 20px ${col}11`,animation:'fadeUp 0.4s ease-out'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+        <span style={{fontSize:10,color:C.dim,textTransform:'uppercase',letterSpacing:'1.2px',...mono}}>{label}</span>
+        <div style={{width:30,height:30,borderRadius:8,background:`${col}18`,display:'flex',alignItems:'center',justifyContent:'center',border:`1px solid ${col}30`,fontSize:13,flexShrink:0}}>{icon}</div>
+      </div>
+      <div style={{...orb,fontSize:26,fontWeight:700,color:col,lineHeight:1,marginBottom:5,textShadow:`0 0 15px ${col}66`}}>{value}</div>
+      <div style={{fontSize:11,color:C.dim}}>
+        {delta!==undefined && <span style={{color:delta>0?C.green:C.red,marginRight:4,fontWeight:600,...mono}}>{delta>0?'↑':'↓'}{Math.abs(delta)}%</span>}
+        <span style={mono}>{sub}</span>
+      </div>
+    </div>
+  );
+}
+
+function PageTitle({ title, sub }) {
+  return (
+    <div style={{marginBottom:22}}>
+      <h1 style={{...orb,fontSize:17,fontWeight:700,color:C.text,letterSpacing:'2px'}}>{title}</h1>
+      {sub && <p style={{fontSize:12,color:C.dim,marginTop:3}}>{sub}</p>}
+    </div>
+  );
+}
+
+function PageWrap({ children }) {
+  return <div style={{padding:'24px 28px',animation:'fadeIn 0.3s ease-out'}}>{children}</div>;
+}
+
+const inputStyle = (extra={}) => ({
+  background:'rgba(0,25,50,0.65)', border:`1px solid ${C.b0}`, color:C.text,
+  borderRadius:7, padding:'7px 11px', fontSize:12, outline:'none', transition:'border-color 0.2s',
+  ...extra
+});
+
+/* ── SIDEBAR ─────────────────────────────────────────────── */
+function Sidebar({ page, setPage }) {
+  const nav = [
+    {id:'dashboard', label:'Dashboard',    icon:'▦'},
+    {id:'monitor',   label:'Live Monitor', icon:'◈'},
+    {id:'rules',     label:'Firewall Rules',icon:'≡'},
+    {id:'analytics', label:'Analytics',    icon:'▲'},
+    {id:'map',       label:'Network Map',  icon:'◉'},
+    {id:'settings',  label:'Settings',     icon:'⊙'},
+    {id:'logs',      label:'Logs',         icon:'☰'},
+  ];
+  return (
+    <div style={{width:215,background:'rgba(0,8,20,0.99)',borderRight:`1px solid ${C.b0}`,display:'flex',flexDirection:'column',height:'100vh',flexShrink:0}}>
+      {/* Logo */}
+      <div style={{padding:'18px 16px',borderBottom:`1px solid ${C.b0}`,display:'flex',alignItems:'center',gap:10}}>
+        <div style={{width:36,height:36,background:`rgba(0,212,255,0.1)`,border:`1px solid ${C.b1}`,borderRadius:10,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,boxShadow:`0 0 15px rgba(0,212,255,0.3)`,flexShrink:0}}>🛡</div>
+        <div>
+          <div style={{...orb,fontSize:10,letterSpacing:'2.5px',color:C.cyan,textShadow:`0 0 10px ${C.cyan}88`}}>SMART SHIELD</div>
+          <div style={{fontSize:9,color:C.muted,letterSpacing:'1px'}}>FIREWALL v1.0</div>
+        </div>
+      </div>
+      {/* Nav items */}
+      <nav style={{flex:1,padding:'14px 10px',overflowY:'auto',display:'flex',flexDirection:'column',gap:3}}>
+        {nav.map(n => {
+          const active = page === n.id;
+          return (
+            <div key={n.id} onClick={()=>setPage(n.id)}
+              style={{display:'flex',alignItems:'center',gap:10,padding:'9px 12px',borderRadius:8,cursor:'pointer',transition:'all 0.2s',color:active?C.cyan:C.dim,background:active?'rgba(0,212,255,0.08)':'transparent',border:`1px solid ${active?C.b1:'transparent'}`,fontSize:13,fontWeight:active?600:400,position:'relative',overflow:'hidden'}}>
+              {active && <div style={{position:'absolute',left:0,top:4,bottom:4,width:3,background:C.cyan,borderRadius:'0 2px 2px 0',boxShadow:`0 0 8px ${C.cyan}`}}/>}
+              <span style={{fontSize:14,opacity:active?1:0.65}}>{n.icon}</span>
+              <span>{n.label}</span>
+              {n.id==='monitor' && <span style={{marginLeft:'auto',width:7,height:7,borderRadius:'50%',background:C.green,animation:'pulse 2s infinite',flexShrink:0,boxShadow:`0 0 6px ${C.green}`}}/>}
+            </div>
+          );
+        })}
+      </nav>
+      {/* Status footer */}
+      <div style={{padding:'12px 16px',borderTop:`1px solid ${C.b0}`}}>
+        <div style={{display:'flex',alignItems:'center',gap:7,marginBottom:10}}>
+          <div style={{width:8,height:8,borderRadius:'50%',background:C.green,boxShadow:`0 0 7px ${C.green}`,animation:'pulse 2s infinite',flexShrink:0}}/>
+          <span style={{fontSize:11,color:C.dim}}>Firewall Active</span>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:8,color:C.dim,fontSize:12,cursor:'pointer',padding:'5px 4px',borderRadius:6,transition:'color 0.2s'}} onMouseEnter={e=>e.currentTarget.style.color=C.red} onMouseLeave={e=>e.currentTarget.style.color=C.dim}>
+          <span>⤺</span><span>Logout</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── TOP BAR ─────────────────────────────────────────────── */
+function Topbar({ page }) {
+  const [clock, setClock] = useState(new Date().toLocaleTimeString('en-US',{hour12:false}));
+  const [notif, setNotif] = useState(3);
+  useEffect(()=>{ const id=setInterval(()=>setClock(new Date().toLocaleTimeString('en-US',{hour12:false})),1000); return()=>clearInterval(id); },[]);
+  const titles = {dashboard:'Dashboard',monitor:'Live Monitor',rules:'Firewall Rules',analytics:'Analytics',map:'Network Map',settings:'Settings',logs:'Logs'};
+  return (
+    <div style={{height:58,background:'rgba(0,10,22,0.97)',borderBottom:`1px solid ${C.b0}`,display:'flex',alignItems:'center',padding:'0 22px',gap:14,flexShrink:0,zIndex:10}}>
+      <div>
+        <span style={{...orb,fontSize:14,fontWeight:700,letterSpacing:'1.5px',color:C.text}}>{titles[page]||page}</span>
+        <span style={{fontSize:11,color:C.muted,marginLeft:10,...mono}}>Network security overview</span>
+      </div>
+      <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:12}}>
+        {/* Search */}
+        <div style={{position:'relative'}}>
+          <input placeholder="Search..." style={{...inputStyle({width:180,paddingLeft:30,fontSize:12})}}
+            onFocus={e=>e.target.style.borderColor=C.b2} onBlur={e=>e.target.style.borderColor=C.b0}/>
+          <span style={{position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',color:C.muted,fontSize:13}}>⌕</span>
+        </div>
+        {/* Bell */}
+        <div style={{position:'relative',cursor:'pointer'}} onClick={()=>setNotif(0)}>
+          <div style={{width:34,height:34,borderRadius:8,background:C.bg2,border:`1px solid ${C.b0}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:15}}>🔔</div>
+          {notif>0 && <div style={{position:'absolute',top:-4,right:-4,width:18,height:18,borderRadius:'50%',background:C.red,color:'#fff',fontSize:9,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',boxShadow:`0 0 8px ${C.red}`}}>{notif}</div>}
+        </div>
+        {/* Clock */}
+        <div style={{...mono,fontSize:12,color:C.cyan,background:C.bg2,border:`1px solid ${C.b0}`,borderRadius:7,padding:'6px 12px',letterSpacing:'1px'}}>{clock}</div>
+        {/* Avatar */}
+        <div style={{width:34,height:34,borderRadius:'50%',background:`linear-gradient(135deg,${C.cyan}44,${C.purple}44)`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:15,border:`1px solid ${C.b1}`,cursor:'pointer'}}>👤</div>
+      </div>
+    </div>
+  );
+}
+
+/* ── APP LAYOUT ──────────────────────────────────────────── */
+function AppLayout({ page, setPage, children }) {
+  return (
+    <div style={{display:'flex',height:'100vh',overflow:'hidden'}}>
+      <Sidebar page={page} setPage={setPage}/>
+      <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',minWidth:0}}>
+        <Topbar page={page}/>
+        <div style={{flex:1,overflowY:'auto'}}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   LOGIN PAGE
+═══════════════════════════════════════════════════════════ */
+function LoginPage({ onLogin }) {
+  const [user,setUser]   = useState('');
+  const [pass,setPass]   = useState('');
+  const [show,setShow]   = useState(false);
+  const [busy,setBusy]   = useState(false);
+  const [err,setErr]     = useState('');
+  const dots = Array.from({length:35},(_,i)=>({id:i,x:ri(2,98),y:ri(2,98),s:ri(1,3),d:ri(2,7)}));
+
+  function submit() {
+    if(!user.trim()||!pass.trim()){setErr('Please enter both fields');return;}
+    setErr(''); setBusy(true);
+    setTimeout(()=>{setBusy(false);onLogin();},1400);
+  }
+
+  const iStyle = {
+    background:'rgba(0,22,46,0.8)', border:`1px solid ${C.b1}`, color:C.text,
+    borderRadius:8, padding:'12px 14px', fontSize:13, outline:'none', width:'100%', transition:'border-color 0.2s',
+  };
+
+  return (
+    <div style={{minHeight:'100vh',background:C.bg0,display:'flex',alignItems:'center',justifyContent:'center',position:'relative',overflow:'hidden'}}>
+      {/* Grid bg */}
+      <div style={{position:'absolute',inset:0,backgroundImage:`linear-gradient(rgba(0,212,255,0.04) 1px,transparent 1px),linear-gradient(90deg,rgba(0,212,255,0.04) 1px,transparent 1px)`,backgroundSize:'44px 44px',pointerEvents:'none'}}/>
+      {/* Radial glow */}
+      <div style={{position:'absolute',inset:0,backgroundImage:`radial-gradient(ellipse 80% 60% at 50% -10%,rgba(0,212,255,0.1) 0%,transparent 65%)`,pointerEvents:'none'}}/>
+      {/* Particles */}
+      {dots.map(p=><div key={p.id} style={{position:'absolute',left:`${p.x}%`,top:`${p.y}%`,width:p.s,height:p.s,borderRadius:'50%',background:C.cyan,opacity:0.25,animation:`pulse ${p.d}s ease-in-out infinite`,pointerEvents:'none'}}/>)}
+      {/* Scan line */}
+      <div style={{position:'absolute',left:0,right:0,height:2,background:`linear-gradient(90deg,transparent,${C.cyan}55,transparent)`,animation:'scanline 5s linear infinite',pointerEvents:'none',opacity:0.5}}/>
+
+      {/* Card */}
+      <div style={{background:C.bg1,border:`1px solid ${C.b1}`,borderRadius:14,padding:40,width:420,boxShadow:`0 0 60px rgba(0,212,255,0.1),0 0 120px rgba(0,212,255,0.04)`,animation:'fadeUp 0.5s ease-out',position:'relative',zIndex:1}}>
+        {/* Logo */}
+        <div style={{textAlign:'center',marginBottom:30}}>
+          <div style={{fontSize:56,marginBottom:12,animation:'float 4s ease-in-out infinite',display:'inline-block',filter:`drop-shadow(0 0 20px ${C.cyan}99)`}}>🛡️</div>
+          <div style={{...orb,fontSize:19,letterSpacing:'3px',color:C.cyan,textShadow:`0 0 15px ${C.cyan}88`}}>SMART SHIELD</div>
+          <div style={{...orb,fontSize:9,letterSpacing:'6px',color:C.dim,marginTop:2}}>FIREWALL</div>
+          <div style={{width:64,height:1,background:`linear-gradient(90deg,transparent,${C.cyan},transparent)`,margin:'14px auto 0'}}/>
+        </div>
+        <div style={{...orb,fontSize:18,fontWeight:700,color:C.text,marginBottom:4}}>Welcome Back</div>
+        <div style={{fontSize:12,color:C.muted,marginBottom:24}}>Sign in to access your dashboard</div>
+
+        {err && (
+          <div style={{background:'rgba(255,51,85,0.1)',border:'1px solid rgba(255,51,85,0.3)',color:C.red,borderRadius:8,padding:'10px 14px',fontSize:12,marginBottom:14}}>{err}</div>
+        )}
+
+        <div style={{marginBottom:15}}>
+          <label style={{fontSize:10,color:C.dim,display:'block',marginBottom:5,letterSpacing:'0.8px',textTransform:'uppercase',...mono}}>USERNAME</label>
+          <input value={user} onChange={e=>setUser(e.target.value)} placeholder="Enter your username" style={iStyle}
+            onFocus={e=>e.target.style.borderColor=C.b2} onBlur={e=>e.target.style.borderColor=C.b1} onKeyDown={e=>e.key==='Enter'&&submit()}/>
+        </div>
+        <div style={{marginBottom:18}}>
+          <label style={{fontSize:10,color:C.dim,display:'block',marginBottom:5,letterSpacing:'0.8px',textTransform:'uppercase',...mono}}>PASSWORD</label>
+          <div style={{position:'relative'}}>
+            <input type={show?'text':'password'} value={pass} onChange={e=>setPass(e.target.value)} placeholder="Enter your password" style={{...iStyle,paddingRight:44}}
+              onFocus={e=>e.target.style.borderColor=C.b2} onBlur={e=>e.target.style.borderColor=C.b1} onKeyDown={e=>e.key==='Enter'&&submit()}/>
+            <button onClick={()=>setShow(v=>!v)} style={{position:'absolute',right:12,top:'50%',transform:'translateY(-50%)',background:'none',border:'none',color:C.dim,fontSize:15,cursor:'pointer',padding:4}}>{show?'👁':'🙈'}</button>
+          </div>
+        </div>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:22}}>
+          <label style={{display:'flex',alignItems:'center',gap:7,fontSize:12,color:C.dim,cursor:'pointer'}}>
+            <input type="checkbox" style={{accentColor:C.cyan}}/> Remember me
+          </label>
+          <span style={{fontSize:12,color:C.cyan,cursor:'pointer'}}>Forgot Password?</span>
+        </div>
+        <button onClick={submit} disabled={busy}
+          style={{width:'100%',padding:'13px',background:busy?'rgba(0,212,255,0.25)':`linear-gradient(135deg,${C.cyan},#0088bb)`,border:'none',borderRadius:9,color:busy?C.dim:'#001520',fontFamily:"'Orbitron',sans-serif",fontSize:11,fontWeight:700,letterSpacing:'2px',cursor:busy?'not-allowed':'pointer',transition:'all 0.3s',boxShadow:busy?'none':`0 4px 20px ${C.cyan}44`}}>
+          {busy ? '⟳  AUTHENTICATING...' : 'SIGN IN'}
+        </button>
+        <div style={{textAlign:'center',marginTop:22,fontSize:10,color:C.muted,...mono}}>© 2024 Smart Shield Firewall  ·  Any credentials work in demo mode</div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   LANDING PAGE
+═══════════════════════════════════════════════════════════ */
+function LandingPage({ onLaunch }) {
+  const feats = [
+    {icon:'📡',title:'Real-Time Monitoring', desc:'Analyze every packet as it flows through your network with zero-latency detection and live dashboards.'},
+    {icon:'🔬',title:'Smart Filtering',       desc:'Rule-based engine automatically evaluates traffic and blocks threats before they enter your network.'},
+    {icon:'⚠️',title:'Threat Detection',      desc:'Advanced heuristics identify zero-day exploits, port scans, brute force attempts, and DDoS attacks.'},
+    {icon:'📊',title:'Live Analytics',        desc:'Beautiful charts and tables give you complete visibility into your network traffic, 24 hours a day.'},
+  ];
+  return (
+    <div style={{minHeight:'100vh',background:C.bg0,overflowY:'auto',overflowX:'hidden'}}>
+      {/* Navbar */}
+      <nav style={{display:'flex',alignItems:'center',padding:'16px 44px',background:'rgba(0,6,16,0.92)',backdropFilter:'blur(20px)',borderBottom:`1px solid ${C.b0}`,position:'sticky',top:0,zIndex:100}}>
+        <div style={{display:'flex',alignItems:'center',gap:10}}>
+          <span style={{fontSize:22,filter:`drop-shadow(0 0 8px ${C.cyan}99)`}}>🛡</span>
+          <div>
+            <div style={{...orb,fontSize:10,letterSpacing:'3px',color:C.cyan,textShadow:`0 0 8px ${C.cyan}88`}}>SMART SHIELD</div>
+            <div style={{fontSize:8,color:C.muted,letterSpacing:'2px'}}>FIREWALL</div>
+          </div>
+        </div>
+        <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:24,fontSize:13,color:C.dim}}>
+          {['Home','Features','About','How It Works','Contact'].map(l=>(
+            <span key={l} style={{cursor:'pointer',transition:'color 0.2s'}} onMouseEnter={e=>e.target.style.color=C.cyan} onMouseLeave={e=>e.target.style.color=C.dim}>{l}</span>
+          ))}
+          <button onClick={onLaunch} style={{background:`linear-gradient(135deg,${C.cyan},#0088bb)`,border:'none',borderRadius:8,color:'#001520',padding:'8px 18px',...orb,fontSize:10,fontWeight:700,letterSpacing:'1.5px',cursor:'pointer',boxShadow:`0 0 20px ${C.cyan}55`,transition:'all 0.2s'}}
+            onMouseEnter={e=>e.currentTarget.style.boxShadow=`0 0 35px ${C.cyan}88`} onMouseLeave={e=>e.currentTarget.style.boxShadow=`0 0 20px ${C.cyan}55`}>
+            LAUNCH DASHBOARD
+          </button>
+        </div>
+      </nav>
+
+      {/* Hero */}
+      <div style={{position:'relative',minHeight:'86vh',display:'flex',alignItems:'center',overflow:'hidden'}}>
+        <div style={{position:'absolute',inset:0,backgroundImage:`linear-gradient(rgba(0,212,255,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(0,212,255,0.03) 1px,transparent 1px)`,backgroundSize:'50px 50px',pointerEvents:'none'}}/>
+        <div style={{position:'absolute',inset:0,background:`radial-gradient(ellipse 80% 60% at 55% 50%,rgba(0,212,255,0.07) 0%,transparent 65%)`,pointerEvents:'none'}}/>
+        {/* Animated shield orb */}
+        <div style={{position:'absolute',right:'7%',top:'50%',transform:'translateY(-50%)',width:400,height:400,pointerEvents:'none'}}>
+          <div style={{position:'absolute',inset:0,borderRadius:'50%',background:`radial-gradient(circle,rgba(0,212,255,0.06),transparent 70%)`,animation:'pulse 4s ease-in-out infinite'}}/>
+          <div style={{position:'absolute',inset:20,borderRadius:'50%',border:`1px solid ${C.b1}`,animation:'spin 22s linear infinite'}}/>
+          <div style={{position:'absolute',inset:60,borderRadius:'50%',border:`1px dashed ${C.b0}`,animation:'spin 14s linear infinite reverse'}}/>
+          <div style={{position:'absolute',inset:100,borderRadius:'50%',border:`1px solid ${C.b2}`,animation:'spin 9s linear infinite'}}/>
+          <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:140,filter:`drop-shadow(0 0 40px ${C.cyan}88)`,animation:'float 6s ease-in-out infinite'}}>🛡</div>
+        </div>
+        {/* Hero text */}
+        <div style={{padding:'0 44px',maxWidth:580,position:'relative',zIndex:1}}>
+          <div style={{...mono,fontSize:10,color:C.cyan,letterSpacing:'3px',marginBottom:16,animation:'fadeUp 0.4s ease-out'}}>✦  ENTERPRISE-GRADE NETWORK SECURITY</div>
+          <h1 style={{...orb,fontSize:58,lineHeight:1.06,marginBottom:10,animation:'fadeUp 0.5s ease-out',fontWeight:900}}>
+            SMART SHIELD<br/>
+            <span style={{color:C.cyan,textShadow:`0 0 20px ${C.cyan}66`}}>FIREWALL</span>
+          </h1>
+          <div style={{...orb,fontSize:13,color:C.dim,letterSpacing:'2px',marginBottom:20,animation:'fadeUp 0.6s ease-out'}}>Real-Time Packet Monitoring & Threat Detection</div>
+          <p style={{fontSize:14,color:C.dim,lineHeight:1.8,maxWidth:450,marginBottom:32,animation:'fadeUp 0.7s ease-out'}}>
+            Smart Shield Firewall protects your network by analyzing live traffic, blocking threats, and giving you complete control over your security with beautiful real-time analytics.
+          </p>
+          <div style={{display:'flex',gap:14,animation:'fadeUp 0.8s ease-out'}}>
+            <button onClick={onLaunch} style={{background:`linear-gradient(135deg,${C.cyan},#0088bb)`,border:'none',borderRadius:10,color:'#001520',padding:'14px 28px',...orb,fontSize:11,fontWeight:700,letterSpacing:'1.5px',cursor:'pointer',boxShadow:`0 6px 28px ${C.cyan}55`,transition:'all 0.2s'}}
+              onMouseEnter={e=>e.currentTarget.style.transform='translateY(-2px)'} onMouseLeave={e=>e.currentTarget.style.transform='none'}>
+              LAUNCH DASHBOARD
+            </button>
+            <button style={{background:'transparent',border:`1px solid ${C.b2}`,borderRadius:10,color:C.cyan,padding:'14px 28px',...orb,fontSize:11,fontWeight:600,letterSpacing:'1px',cursor:'pointer',transition:'all 0.2s'}}
+              onMouseEnter={e=>e.currentTarget.style.background=C.bg2} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+              VIEW LIVE TRAFFIC
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Features */}
+      <div style={{padding:'56px 44px',background:'rgba(0,6,16,0.7)',borderTop:`1px solid ${C.b0}`}}>
+        <div style={{textAlign:'center',marginBottom:40}}>
+          <div style={{...orb,fontSize:18,fontWeight:700,color:C.text,letterSpacing:'2px',marginBottom:8}}>WHAT WE PROTECT YOU FROM</div>
+          <div style={{width:60,height:2,background:`linear-gradient(90deg,transparent,${C.cyan},transparent)`,margin:'0 auto'}}/>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:18}}>
+          {feats.map((f,i)=>(
+            <div key={i} style={{background:C.bg1,border:`1px solid ${C.b0}`,borderRadius:12,padding:26,cursor:'default',transition:'all 0.3s',animation:`fadeUp ${0.2+i*0.1}s ease-out`}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor=C.b2;e.currentTarget.style.transform='translateY(-5px)';e.currentTarget.style.boxShadow=`0 12px 40px rgba(0,212,255,0.1)`;}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor=C.b0;e.currentTarget.style.transform='none';e.currentTarget.style.boxShadow='none';}}>
+              <div style={{fontSize:34,marginBottom:14,filter:`drop-shadow(0 0 10px ${C.cyan}66)`}}>{f.icon}</div>
+              <div style={{...orb,fontSize:12,letterSpacing:'0.5px',marginBottom:8,color:C.cyan,fontWeight:700}}>{f.title}</div>
+              <div style={{fontSize:12,color:C.dim,lineHeight:1.7}}>{f.desc}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   DASHBOARD
+═══════════════════════════════════════════════════════════ */
+function DashboardPage() {
+  const [traffic, setTraffic] = useState(genTrafficData);
+  const [packets, setPackets] = useState(()=>Array.from({length:12},genPacket).reverse());
+  const [stats,   setStats  ] = useState({total:24531,allowed:18382,blocked:6149,rules:12});
+
+  useEffect(()=>{
+    const id = setInterval(()=>{
+      const p = genPacket();
+      setPackets(ps => [p,...ps].slice(0,12));
+      setStats(s => ({...s, total:s.total+ri(8,50), allowed:s.allowed+ri(5,38), blocked:s.blocked+(rb(0.35)?ri(1,6):0)}));
+    }, 1800);
+    return ()=>clearInterval(id);
+  },[]);
+
+  return (
+    <PageWrap>
+      {/* Stat cards */}
+      <div style={{display:'flex',gap:14,marginBottom:18,flexWrap:'wrap'}}>
+        <StatCard icon="📦" label="Total Packets"   value={stats.total.toLocaleString()}   sub="vs last 34h" delta={12.5}  color="cyan"/>
+        <StatCard icon="✅" label="Allowed Traffic"  value={stats.allowed.toLocaleString()} sub="vs last 24h" delta={8.2}   color="green"/>
+        <StatCard icon="🚫" label="Blocked Threats"  value={stats.blocked.toLocaleString()} sub="vs last 24h" delta={-15.7} color="red"/>
+        <StatCard icon="⚙️" label="Active Rules"     value={stats.rules}                    sub="No changes"               color="orange"/>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'1.65fr 1fr',gap:14,marginBottom:14}}>
+        {/* Traffic chart */}
+        <Card>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}}>
+            <span style={{...orb,fontSize:13,fontWeight:700}}>Traffic Overview</span>
+            <select style={{...inputStyle({fontSize:11,padding:'4px 8px'})}}>
+              <option>Last 24 Hours</option><option>Last 7 Days</option>
+            </select>
+          </div>
+          <AreaChart data={traffic} height={175}/>
+          <div style={{display:'flex',gap:16,marginTop:10}}>
+            {[{c:C.cyan,l:'Allowed'},{c:C.red,l:'Blocked'}].map(x=>(
+              <span key={x.l} style={{display:'flex',alignItems:'center',gap:5,fontSize:10,color:C.dim,...mono}}>
+                <span style={{width:12,height:2,background:x.c,display:'inline-block',borderRadius:1}}/>{x.l}
+              </span>
+            ))}
+          </div>
+        </Card>
+        {/* Protocol donut */}
+        <Card>
+          <div style={{...orb,fontSize:13,fontWeight:700,marginBottom:14}}>Protocol Distribution</div>
+          <div style={{display:'flex',alignItems:'center',gap:14}}>
+            <DonutChart data={PROTO_DATA} size={130} centerLabel="24,531"/>
+            <div style={{flex:1}}>
+              {PROTO_DATA.map((p,i)=>(
+                <div key={i} style={{display:'flex',justifyContent:'space-between',marginBottom:7,fontSize:11}}>
+                  <div style={{display:'flex',alignItems:'center',gap:6}}>
+                    <div style={{width:8,height:8,borderRadius:2,background:p.color,flexShrink:0}}/>
+                    <span style={{color:C.dim,...mono}}>{p.name}</span>
+                  </div>
+                  <span style={{color:C.text,fontWeight:600,...mono}}>{p.value}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'1.65fr 1fr',gap:14}}>
+        {/* Live feed */}
+        <Card>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+            <span style={{...orb,fontSize:13,fontWeight:700}}>Live Traffic Feed</span>
+            <div style={{width:8,height:8,borderRadius:'50%',background:C.green,boxShadow:`0 0 8px ${C.green}`,animation:'pulse 2s infinite'}}/>
+          </div>
+          <div style={{overflowX:'auto'}}>
+            <table style={{width:'100%',borderCollapse:'collapse'}}>
+              <thead><tr>
+                {['Time','Source IP','Protocol','Info','Status'].map(h=>(
+                  <th key={h} style={{textAlign:'left',padding:'7px 10px',fontSize:10,color:C.dim,letterSpacing:'1px',textTransform:'uppercase',borderBottom:`1px solid ${C.b0}`,...mono}}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {packets.map((p,i)=>(
+                  <tr key={p.id} style={{animation:i===0?'slideIn 0.3s ease-out':undefined}}>
+                    <td style={{padding:'7px 10px',fontSize:11,color:C.muted,...mono,borderBottom:`1px solid rgba(0,212,255,0.04)`}}>{p.time}</td>
+                    <td style={{padding:'7px 10px',fontSize:11,color:C.cyan,...mono,borderBottom:`1px solid rgba(0,212,255,0.04)`}}>{p.srcIP}</td>
+                    <td style={{padding:'7px 10px',fontSize:11,color:C.text,...mono,borderBottom:`1px solid rgba(0,212,255,0.04)`}}>{p.proto}</td>
+                    <td style={{padding:'7px 10px',fontSize:11,color:C.dim,borderBottom:`1px solid rgba(0,212,255,0.04)`}}>{p.info}</td>
+                    <td style={{padding:'7px 10px',borderBottom:`1px solid rgba(0,212,255,0.04)`}}><Badge status={p.status}/></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+        {/* Top blocked */}
+        <Card>
+          <div style={{...orb,fontSize:13,fontWeight:700,marginBottom:16}}>Top Blocked IPs</div>
+          {TOP_BLOCKED.map((t,i)=>(
+            <div key={i} style={{marginBottom:14}}>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:5,fontSize:11}}>
+                <span style={{color:C.cyan,...mono}}>{t.ip}</span>
+                <span style={{color:C.text,fontWeight:600,...mono}}>{t.hits}</span>
+              </div>
+              <div style={{height:4,background:'rgba(255,255,255,0.07)',borderRadius:2}}>
+                <div style={{height:'100%',width:`${t.pct}%`,background:`linear-gradient(90deg,${C.red},${C.orange})`,borderRadius:2,boxShadow:`0 0 6px ${C.red}66`,transition:'width 0.5s ease-out'}}/>
+              </div>
+            </div>
+          ))}
+        </Card>
+      </div>
+    </PageWrap>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   LIVE MONITOR
+═══════════════════════════════════════════════════════════ */
+function LiveMonitorPage() {
+  const [packets,  setPackets ] = useState(()=>Array.from({length:20},genPacket));
+  const [filter,   setFilter  ] = useState('All');
+  const [search,   setSearch  ] = useState('');
+  const [paused,   setPaused  ] = useState(false);
+  const [pps,      setPps     ] = useState(256);
+  const [conns,    setConns   ] = useState(128);
+  const [blocked,  setBlocked ] = useState(6149);
+  const [allowed,  setAllowed ] = useState(18382);
+
+  useEffect(()=>{
+    if(paused) return;
+    const id = setInterval(()=>{
+      const p = genPacket();
+      setPackets(ps => [p,...ps].slice(0,30));
+      setPps(v => Math.max(80,v+ri(-25,35)));
+      setConns(v => Math.max(40,v+ri(-4,7)));
+      if(p.status==='Blocked') setBlocked(v=>v+1);
+      else setAllowed(v=>v+1);
+    }, 900);
+    return ()=>clearInterval(id);
+  },[paused]);
+
+  const shown = packets.filter(p => {
+    if(filter!=='All' && p.status!==filter) return false;
+    const q = search.toLowerCase();
+    if(q && !p.srcIP.includes(q) && !p.dstIP.includes(q) && !p.proto.toLowerCase().includes(q) && !p.info.toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  return (
+    <PageWrap>
+      <PageTitle title="LIVE MONITOR" sub="Real-time network traffic monitoring"/>
+      {/* Filter bar */}
+      <Card style={{padding:'11px 14px',marginBottom:14,display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+        {['All','Allowed','Blocked'].map(f=>(
+          <button key={f} onClick={()=>setFilter(f)}
+            style={{padding:'5px 14px',borderRadius:6,border:`1px solid ${filter===f?C.b2:C.b0}`,background:filter===f?'rgba(0,212,255,0.1)':'transparent',color:filter===f?C.cyan:C.dim,fontSize:12,cursor:'pointer',transition:'all 0.2s'}}>
+            {f}
+          </button>
+        ))}
+        <select style={{...inputStyle({minWidth:110})}}>
+          <option>All Protocols</option>{PROTOCOLS.map(p=><option key={p}>{p}</option>)}
+        </select>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search IP / protocol / info..." style={{...inputStyle({minWidth:220})}} onFocus={e=>e.target.style.borderColor=C.b2} onBlur={e=>e.target.style.borderColor=C.b0}/>
+        <div style={{marginLeft:'auto',display:'flex',gap:8}}>
+          <button onClick={()=>setPaused(v=>!v)} style={{...inputStyle({cursor:'pointer',color:paused?C.green:C.orange,borderColor:paused?'rgba(0,255,136,0.3)':'rgba(255,136,0,0.3)',padding:'5px 14px',minWidth:90})}}>
+            {paused ? '▶ Resume' : '⏸ Pause'}
+          </button>
+          <button onClick={()=>setPackets([])} style={{...inputStyle({cursor:'pointer',color:C.red,borderColor:'rgba(255,51,85,0.3)',padding:'5px 14px'})}}>Clear</button>
+        </div>
+      </Card>
+      {/* Table */}
+      <Card style={{padding:0,overflow:'hidden',marginBottom:14}}>
+        <div style={{overflowX:'auto',maxHeight:340,overflowY:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse'}}>
+            <thead style={{position:'sticky',top:0,background:'rgba(0,12,26,0.99)',zIndex:2}}>
+              <tr>{['Time','Source IP','Destination IP','Protocol','Info','Bytes','Status'].map(h=>(
+                <th key={h} style={{textAlign:'left',padding:'9px 12px',fontSize:10,color:C.dim,letterSpacing:'1px',textTransform:'uppercase',borderBottom:`1px solid ${C.b0}`,...mono,whiteSpace:'nowrap'}}>{h}</th>
+              ))}</tr>
+            </thead>
+            <tbody>
+              {shown.length===0
+                ? <tr><td colSpan={7} style={{padding:36,textAlign:'center',color:C.muted,fontSize:12}}>No packets match the current filter</td></tr>
+                : shown.map((p,i)=>(
+                  <tr key={p.id} style={{animation:i<2?'slideIn 0.3s ease-out':undefined,transition:'background 0.1s'}}
+                    onMouseEnter={e=>e.currentTarget.style.background='rgba(0,212,255,0.03)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                    <td style={{padding:'7px 12px',fontSize:11,color:C.muted,...mono,borderBottom:`1px solid rgba(0,212,255,0.04)`,whiteSpace:'nowrap'}}>{p.time}</td>
+                    <td style={{padding:'7px 12px',fontSize:11,color:C.cyan,...mono,borderBottom:`1px solid rgba(0,212,255,0.04)`,whiteSpace:'nowrap'}}>{p.srcIP}</td>
+                    <td style={{padding:'7px 12px',fontSize:11,color:C.dim,...mono,borderBottom:`1px solid rgba(0,212,255,0.04)`,whiteSpace:'nowrap'}}>{p.dstIP}</td>
+                    <td style={{padding:'7px 12px',borderBottom:`1px solid rgba(0,212,255,0.04)`}}><span style={{background:'rgba(0,212,255,0.08)',border:`1px solid ${C.b0}`,borderRadius:4,padding:'1px 7px',fontSize:10,...mono}}>{p.proto}</span></td>
+                    <td style={{padding:'7px 12px',fontSize:11,color:C.dim,borderBottom:`1px solid rgba(0,212,255,0.04)`}}>{p.info}</td>
+                    <td style={{padding:'7px 12px',fontSize:11,color:C.muted,...mono,borderBottom:`1px solid rgba(0,212,255,0.04)`}}>{p.bytes.toLocaleString()}</td>
+                    <td style={{padding:'7px 12px',borderBottom:`1px solid rgba(0,212,255,0.04)`}}><Badge status={p.status}/></td>
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </div>
+      </Card>
+      {/* Bottom stats */}
+      <div style={{display:'flex',gap:14,flexWrap:'wrap'}}>
+        {[
+          {label:'Packets / Second', value:pps,                    color:C.cyan  },
+          {label:'Active Connections',value:conns,                 color:C.green },
+          {label:'Blocked Today',     value:blocked.toLocaleString(),color:C.red  },
+          {label:'Allowed Today',     value:allowed.toLocaleString(),color:C.orange},
+        ].map((s,i)=>(
+          <div key={i} style={{background:C.bg1,border:`1px solid ${C.b0}`,borderRadius:12,padding:'16px 20px',flex:1,minWidth:130,textAlign:'center'}}>
+            <div style={{...orb,fontSize:26,fontWeight:700,color:s.color,textShadow:`0 0 12px ${s.color}66`}}>{s.value}</div>
+            <div style={{fontSize:11,color:C.dim,marginTop:4,...mono}}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+    </PageWrap>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   FIREWALL RULES
+═══════════════════════════════════════════════════════════ */
+function FirewallRulesPage() {
+  const [rules,    setRules   ] = useState(RULES_INIT);
+  const [showForm, setShowForm] = useState(false);
+  const [form,     setForm    ] = useState({name:'',src:'',dst:'',proto:'TCP',action:'Allow',priority:''});
+  const [msg,      setMsg     ] = useState('');
+
+  function toggleRule(id){ setRules(rs=>rs.map(r=>r.id===id?{...r,active:!r.active}:r)); }
+  function deleteRule(id){ if(window.confirm('Delete this rule?')) setRules(rs=>rs.filter(r=>r.id!==id)); }
+  function addRule(){
+    if(!form.name.trim()){alert('Rule name is required');return;}
+    setRules(rs=>[...rs,{...form,id:Date.now(),active:true,priority:rs.length+1}]);
+    setForm({name:'',src:'',dst:'',proto:'TCP',action:'Allow',priority:''});
+    setShowForm(false);
+    setMsg('✓ Rule added successfully');
+    setTimeout(()=>setMsg(''),3000);
+  }
+
+  const fi = (extra={}) => ({...inputStyle({width:'100%',...extra})});
+  return (
+    <PageWrap>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
+        <PageTitle title="FIREWALL RULES" sub="Manage your firewall rules and policies"/>
+        <button onClick={()=>setShowForm(v=>!v)} style={{background:`linear-gradient(135deg,${C.cyan},#0088bb)`,border:'none',borderRadius:8,color:'#001520',padding:'9px 18px',...orb,fontSize:10,fontWeight:700,letterSpacing:'1px',cursor:'pointer',display:'flex',alignItems:'center',gap:6}}>
+          + ADD RULE
+        </button>
+      </div>
+
+      {msg && <div style={{background:'rgba(0,255,136,0.1)',border:'1px solid rgba(0,255,136,0.3)',color:C.green,borderRadius:8,padding:'10px 14px',fontSize:12,marginBottom:14,animation:'fadeIn 0.3s'}}>{msg}</div>}
+
+      <Card style={{padding:0,overflow:'hidden',marginBottom:16}}>
+        <div style={{overflowX:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse'}}>
+            <thead><tr>
+              {['#','Rule Name','Source','Destination','Protocol','Action','Priority','Status','Controls'].map(h=>(
+                <th key={h} style={{textAlign:'left',padding:'10px 12px',fontSize:10,color:C.dim,letterSpacing:'1px',textTransform:'uppercase',borderBottom:`1px solid ${C.b0}`,...mono,whiteSpace:'nowrap'}}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {rules.map(r=>(
+                <tr key={r.id} style={{opacity:r.active?1:0.5,transition:'opacity 0.2s'}} onMouseEnter={e=>e.currentTarget.style.background='rgba(0,212,255,0.025)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                  <td style={{padding:'10px 12px',color:C.muted,...mono,fontSize:11,borderBottom:`1px solid rgba(0,212,255,0.05)`}}>{r.id}</td>
+                  <td style={{padding:'10px 12px',color:C.text,fontWeight:500,fontSize:13,borderBottom:`1px solid rgba(0,212,255,0.05)`}}>{r.name}</td>
+                  <td style={{padding:'10px 12px',color:C.cyan,...mono,fontSize:11,borderBottom:`1px solid rgba(0,212,255,0.05)`,whiteSpace:'nowrap'}}>{r.src}</td>
+                  <td style={{padding:'10px 12px',color:C.dim,...mono,fontSize:11,borderBottom:`1px solid rgba(0,212,255,0.05)`,whiteSpace:'nowrap'}}>{r.dst}</td>
+                  <td style={{padding:'10px 12px',borderBottom:`1px solid rgba(0,212,255,0.05)`}}><span style={{background:'rgba(0,212,255,0.08)',border:`1px solid ${C.b0}`,borderRadius:4,padding:'2px 8px',fontSize:10,...mono}}>{r.proto}</span></td>
+                  <td style={{padding:'10px 12px',borderBottom:`1px solid rgba(0,212,255,0.05)`}}><Badge status={r.action}/></td>
+                  <td style={{padding:'10px 12px',color:C.muted,...mono,textAlign:'center',borderBottom:`1px solid rgba(0,212,255,0.05)`}}>{r.priority}</td>
+                  <td style={{padding:'10px 12px',borderBottom:`1px solid rgba(0,212,255,0.05)`}}><Toggle checked={r.active} onChange={()=>toggleRule(r.id)}/></td>
+                  <td style={{padding:'10px 12px',borderBottom:`1px solid rgba(0,212,255,0.05)`}}>
+                    <button onClick={()=>deleteRule(r.id)} style={{background:'rgba(255,51,85,0.1)',border:'1px solid rgba(255,51,85,0.25)',color:C.red,borderRadius:6,padding:'4px 10px',fontSize:11,cursor:'pointer',transition:'background 0.2s'}}
+                      onMouseEnter={e=>e.currentTarget.style.background='rgba(255,51,85,0.22)'} onMouseLeave={e=>e.currentTarget.style.background='rgba(255,51,85,0.1)'}>Delete</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {showForm && (
+        <Card style={{border:`1px solid ${C.b2}`,animation:'fadeUp 0.3s ease-out',boxShadow:`0 0 30px rgba(0,212,255,0.08)`}}>
+          <div style={{...orb,fontSize:13,marginBottom:16,color:C.cyan}}>Add New Rule</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:12,marginBottom:16}}>
+            {[{k:'name',l:'Rule Name',p:'e.g., Block Telnet'},{k:'src',l:'Source IP/CIDR',p:'e.g., 192.168.1.0/24'},{k:'dst',l:'Destination',p:'e.g., Any'}].map(f=>(
+              <div key={f.k}>
+                <label style={{fontSize:10,color:C.dim,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.8px',...mono}}>{f.l}</label>
+                <input value={form[f.k]} onChange={e=>setForm(v=>({...v,[f.k]:e.target.value}))} placeholder={f.p} style={fi()} onFocus={e=>e.target.style.borderColor=C.b2} onBlur={e=>e.target.style.borderColor=C.b0}/>
+              </div>
+            ))}
+            <div>
+              <label style={{fontSize:10,color:C.dim,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.8px',...mono}}>Protocol</label>
+              <select value={form.proto} onChange={e=>setForm(v=>({...v,proto:e.target.value}))} style={fi()}>
+                {['TCP','UDP','ICMP','HTTP','HTTPS','DNS','Any'].map(p=><option key={p}>{p}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{fontSize:10,color:C.dim,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.8px',...mono}}>Action</label>
+              <select value={form.action} onChange={e=>setForm(v=>({...v,action:e.target.value}))} style={fi()}>
+                <option>Allow</option><option>Block</option>
+              </select>
+            </div>
+            <div>
+              <label style={{fontSize:10,color:C.dim,display:'block',marginBottom:5,textTransform:'uppercase',letterSpacing:'0.8px',...mono}}>Priority</label>
+              <input value={form.priority} onChange={e=>setForm(v=>({...v,priority:e.target.value}))} placeholder="e.g., 8" type="number" min="1" style={fi()}/>
+            </div>
+          </div>
+          <div style={{display:'flex',gap:10}}>
+            <button onClick={addRule} style={{background:`linear-gradient(135deg,${C.cyan},#0088bb)`,border:'none',borderRadius:8,color:'#001520',padding:'9px 22px',...orb,fontSize:10,fontWeight:700,letterSpacing:'1px',cursor:'pointer'}}>ADD RULE</button>
+            <button onClick={()=>setShowForm(false)} style={{background:'transparent',border:`1px solid ${C.b1}`,borderRadius:8,color:C.dim,padding:'9px 18px',fontSize:12,cursor:'pointer'}}>Cancel</button>
+          </div>
+        </Card>
+      )}
+    </PageWrap>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   ANALYTICS
+═══════════════════════════════════════════════════════════ */
+function AnalyticsPage() {
+  const [data] = useState(genTrafficData);
+  const talkers = [
+    {ip:'192.168.1.2',  pkts:45231,pct:100},{ip:'10.0.0.5',   pkts:32456,pct:72},
+    {ip:'172.16.0.8',   pkts:28799,pct:64}, {ip:'8.8.8.8',    pkts:18456,pct:41},
+    {ip:'192.168.1.10', pkts:15807,pct:35},
+  ];
+  const avbData = [{name:'Allowed',value:76.9,color:C.cyan},{name:'Blocked',value:23.1,color:C.red}];
+
+  return (
+    <PageWrap>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
+        <PageTitle title="ANALYTICS" sub="Deep insights into your network traffic"/>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          <input type="date" defaultValue="2024-05-20" style={inputStyle({fontSize:11})}/>
+          <span style={{color:C.muted}}>—</span>
+          <input type="date" defaultValue="2024-05-27" style={inputStyle({fontSize:11})}/>
+        </div>
+      </div>
+
+      <div style={{display:'flex',gap:14,marginBottom:16,flexWrap:'wrap'}}>
+        {[
+          {l:'Total Traffic',  v:'156,789', c:C.cyan  },
+          {l:'Peak Packets/s', v:'4,231',   c:C.green },
+          {l:'Threat Rate',    v:'23.1%',   c:C.red   },
+          {l:'Avg Latency',    v:'1.4ms',   c:C.orange},
+        ].map((x,i)=>(
+          <div key={i} style={{background:C.bg1,border:`1px solid ${C.b0}`,borderRadius:12,padding:'14px 18px',flex:1,minWidth:120,textAlign:'center'}}>
+            <div style={{...orb,fontSize:22,fontWeight:700,color:x.c,textShadow:`0 0 12px ${x.c}66`}}>{x.v}</div>
+            <div style={{fontSize:10,color:C.dim,marginTop:4,...mono,letterSpacing:'0.5px'}}>{x.l}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'1.7fr 1fr',gap:14,marginBottom:14}}>
+        <Card>
+          <div style={{...orb,fontSize:13,fontWeight:700,marginBottom:14}}>Traffic Over Time</div>
+          <AreaChart data={data} height={195}/>
+        </Card>
+        <Card>
+          <div style={{...orb,fontSize:13,fontWeight:700,marginBottom:14}}>Traffic by Protocol</div>
+          <div style={{display:'flex',alignItems:'center',gap:12}}>
+            <DonutChart data={PROTO_DATA} size={120} centerLabel="156,789"/>
+            <div style={{flex:1}}>
+              {PROTO_DATA.map((p,i)=>(
+                <div key={i} style={{display:'flex',justifyContent:'space-between',marginBottom:7,fontSize:11}}>
+                  <div style={{display:'flex',alignItems:'center',gap:5}}><div style={{width:7,height:7,borderRadius:2,background:p.color,flexShrink:0}}/><span style={{color:C.dim,...mono}}>{p.name}</span></div>
+                  <span style={{color:C.text,...mono}}>{p.value}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'1.7fr 1fr',gap:14}}>
+        <Card>
+          <div style={{...orb,fontSize:13,fontWeight:700,marginBottom:14}}>Top Talkers</div>
+          <table style={{width:'100%',borderCollapse:'collapse'}}>
+            <thead><tr>{['IP Address','Total Packets','Usage %'].map(h=><th key={h} style={{textAlign:'left',padding:'7px 10px',fontSize:10,color:C.dim,letterSpacing:'1px',textTransform:'uppercase',borderBottom:`1px solid ${C.b0}`,...mono}}>{h}</th>)}</tr></thead>
+            <tbody>{talkers.map((t,i)=>(
+              <tr key={i}>
+                <td style={{padding:'9px 10px',color:C.cyan,...mono,fontSize:11,borderBottom:`1px solid rgba(0,212,255,0.05)`}}>{t.ip}</td>
+                <td style={{padding:'9px 10px',color:C.text,...mono,fontSize:11,borderBottom:`1px solid rgba(0,212,255,0.05)`}}>{t.pkts.toLocaleString()}</td>
+                <td style={{padding:'9px 10px',borderBottom:`1px solid rgba(0,212,255,0.05)`,minWidth:120}}>
+                  <div style={{height:4,background:'rgba(255,255,255,0.07)',borderRadius:2}}>
+                    <div style={{height:'100%',width:`${t.pct}%`,background:`linear-gradient(90deg,${C.cyan},${C.green})`,borderRadius:2}}/>
+                  </div>
+                </td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </Card>
+        <Card>
+          <div style={{...orb,fontSize:13,fontWeight:700,marginBottom:14}}>Allowed vs Blocked</div>
+          <div style={{display:'flex',alignItems:'center',gap:16}}>
+            <DonutChart data={avbData} size={120} centerLabel="156,789"/>
+            <div style={{flex:1}}>
+              {[{l:'Allowed',v:'120,640',p:76.9,c:C.cyan},{l:'Blocked',v:'36,149',p:23.1,c:C.red}].map((x,i)=>(
+                <div key={i} style={{marginBottom:14}}>
+                  <div style={{fontSize:12,color:x.c,marginBottom:4,...mono}}>{x.l}: <strong>{x.v}</strong></div>
+                  <div style={{height:5,background:'rgba(255,255,255,0.07)',borderRadius:3}}>
+                    <div style={{height:'100%',width:`${x.p}%`,background:`linear-gradient(90deg,${x.c},${x.c}88)`,borderRadius:3,boxShadow:`0 0 6px ${x.c}55`}}/>
+                  </div>
+                  <div style={{fontSize:10,color:C.muted,marginTop:2,...mono}}>{x.p}%</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+      </div>
+    </PageWrap>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   NETWORK MAP
+═══════════════════════════════════════════════════════════ */
+function NetworkMapPage() {
+  const nodes = [
+    {id:'fw',  x:440,y:260,label:'Firewall',  color:C.cyan,  size:20},
+    {id:'s1',  x:240,y:130,label:'Server 01', color:C.green, size:14},
+    {id:'s2',  x:620,y:130,label:'Server 02', color:C.green, size:14},
+    {id:'c1',  x:130,y:360,label:'Client A',  color:C.dim,   size:12},
+    {id:'c2',  x:300,y:430,label:'Client B',  color:C.dim,   size:12},
+    {id:'c3',  x:560,y:430,label:'Client C',  color:C.dim,   size:12},
+    {id:'r1',  x:720,y:360,label:'Router',    color:C.orange,size:14},
+    {id:'inet',x:720,y:80, label:'Internet',  color:C.purple,size:14},
+    {id:'thr', x:820,y:200,label:'⚠ Threat', color:C.red,   size:14},
+  ];
+  const edges = [['fw','s1'],['fw','s2'],['fw','c1'],['fw','c2'],['fw','c3'],['fw','r1'],['r1','inet'],['r1','thr']];
+
+  const connStatus=[{l:'Active',n:128,c:C.green},{l:'Suspicious',n:12,c:C.orange},{l:'Blocked',n:45,c:C.red}];
+  const topConn=[
+    {a:'192.168.1.2', b:'8.8.8.8',     pkts:45231,pct:100},
+    {a:'10.0.0.5',    b:'1.1.1.1',     pkts:32456,pct:72},
+    {a:'172.16.0.8',  b:'1.1.1.1',     pkts:28799,pct:64},
+    {a:'8.8.8.8',     b:'192.168.1.5', pkts:18456,pct:41},
+    {a:'192.168.1.10',b:'142.250.1.1', pkts:15807,pct:35},
+  ];
+
+  return (
+    <PageWrap>
+      <PageTitle title="NETWORK MAP" sub="Live topology of your network connections"/>
+      <div style={{display:'grid',gridTemplateColumns:'1.8fr 1fr',gap:14}}>
+        <Card style={{padding:0,overflow:'hidden'}}>
+          <div style={{padding:'12px 16px',borderBottom:`1px solid ${C.b0}`,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <span style={{...orb,fontSize:13,fontWeight:700}}>Live Network Topology</span>
+            <div style={{display:'flex',gap:14}}>
+              {[{c:C.green,l:'Active'},{c:C.orange,l:'Suspicious'},{c:C.red,l:'Threat'}].map(x=>(
+                <span key={x.l} style={{display:'flex',alignItems:'center',gap:4,fontSize:10,color:C.dim,...mono}}>
+                  <span style={{width:7,height:7,borderRadius:'50%',background:x.c,display:'inline-block',boxShadow:`0 0 5px ${x.c}`}}/>
+                  {x.l}
+                </span>
+              ))}
+            </div>
+          </div>
+          <svg width="100%" viewBox="0 0 940 520" style={{background:'rgba(0,8,20,0.5)',display:'block'}}>
+            <defs>
+              <pattern id="pg" width="44" height="44" patternUnits="userSpaceOnUse">
+                <path d="M 44 0 L 0 0 0 44" fill="none" stroke="rgba(0,212,255,0.04)" strokeWidth="1"/>
+              </pattern>
+              <radialGradient id="glFW" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stopColor={C.cyan} stopOpacity="0.12"/>
+                <stop offset="100%" stopColor={C.cyan} stopOpacity="0"/>
+              </radialGradient>
+            </defs>
+            <rect width="940" height="520" fill="url(#pg)"/>
+            <ellipse cx={nodes[0].x} cy={nodes[0].y} rx={90} ry={70} fill="url(#glFW)"/>
+
+            {/* Edges */}
+            {edges.map(([a,b],i)=>{
+              const na=nodes.find(n=>n.id===a), nb=nodes.find(n=>n.id===b);
+              const isThr = na.id==='thr'||nb.id==='thr';
+              return (
+                <g key={i}>
+                  <line x1={na.x} y1={na.y} x2={nb.x} y2={nb.y}
+                    stroke={isThr?C.red:C.b1} strokeWidth={isThr?1.5:1}
+                    strokeDasharray={isThr?"7 4":"none"} opacity={0.7}/>
+                  <circle r={3} fill={isThr?C.red:C.cyan} opacity={0.9}>
+                    <animateMotion dur={`${2+i*0.4}s`} repeatCount="indefinite"
+                      path={`M${na.x},${na.y} L${nb.x},${nb.y}`}/>
+                  </circle>
+                </g>
+              );
+            })}
+
+            {/* Nodes */}
+            {nodes.map(n=>(
+              <g key={n.id}>
+                <circle cx={n.x} cy={n.y} r={n.size+10} fill={`${n.color}07`} stroke={`${n.color}18`} strokeWidth={1}/>
+                <circle cx={n.x} cy={n.y} r={n.size} fill={`${n.color}18`} stroke={n.color} strokeWidth={1.5}/>
+                {n.id==='fw' && (
+                  <circle cx={n.x} cy={n.y} r={30} fill="none" stroke={C.cyan} strokeWidth={0.5} opacity={0.4} strokeDasharray="4 4">
+                    <animateTransform attributeName="transform" type="rotate" from={`0 ${n.x} ${n.y}`} to={`360 ${n.x} ${n.y}`} dur="10s" repeatCount="indefinite"/>
+                  </circle>
+                )}
+                {n.id==='thr' && (
+                  <circle cx={n.x} cy={n.y} r={20} fill="none" stroke={C.red} strokeWidth={1.5}>
+                    <animate attributeName="r" values="14;32;14" dur="1.8s" repeatCount="indefinite"/>
+                    <animate attributeName="opacity" values="0.9;0;0.9" dur="1.8s" repeatCount="indefinite"/>
+                  </circle>
+                )}
+                <text x={n.x} y={n.y+1} textAnchor="middle" dominantBaseline="middle"
+                  fill={n.color} fontSize={n.id==='fw'?10:8} fontFamily="'Share Tech Mono'" fontWeight="bold">
+                  {n.id==='fw'?'FW':n.id==='thr'?'⚠':n.id==='inet'?'WAN':n.id.toUpperCase()}
+                </text>
+                <text x={n.x} y={n.y+(n.id==='fw'?36:26)} textAnchor="middle"
+                  fill="rgba(208,238,255,0.45)" fontSize={9} fontFamily="'Exo 2'">{n.label}</text>
+              </g>
+            ))}
+          </svg>
+        </Card>
+
+        <div style={{display:'flex',flexDirection:'column',gap:14}}>
+          <Card>
+            <div style={{...orb,fontSize:13,fontWeight:700,marginBottom:14}}>Connection Status</div>
+            {connStatus.map((cs,i)=>(
+              <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'9px 0',borderBottom:i<2?`1px solid ${C.b0}`:'none'}}>
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  <div style={{width:10,height:10,borderRadius:'50%',background:cs.c,boxShadow:`0 0 7px ${cs.c}`,animation:'pulse 2s infinite'}}/>
+                  <span style={{fontSize:12,color:C.dim}}>{cs.l}</span>
+                </div>
+                <span style={{...orb,fontSize:18,color:cs.c,textShadow:`0 0 10px ${cs.c}66`}}>{cs.n}</span>
+              </div>
+            ))}
+          </Card>
+          <Card style={{flex:1}}>
+            <div style={{...orb,fontSize:13,fontWeight:700,marginBottom:14}}>Top Connections</div>
+            {topConn.map((c,i)=>(
+              <div key={i} style={{marginBottom:12,paddingBottom:12,borderBottom:i<4?`1px solid ${C.b0}`:'none'}}>
+                <div style={{display:'flex',justifyContent:'space-between',marginBottom:4,fontSize:10,...mono}}>
+                  <span style={{color:C.cyan}}>{c.a}</span>
+                  <span style={{color:C.muted}}>→</span>
+                  <span style={{color:C.dim}}>{c.b}</span>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  <div style={{height:3,flex:1,background:'rgba(255,255,255,0.07)',borderRadius:2}}>
+                    <div style={{height:'100%',width:`${c.pct}%`,background:`linear-gradient(90deg,${C.cyan},${C.green})`,borderRadius:2}}/>
+                  </div>
+                  <span style={{...mono,fontSize:10,color:C.text,flexShrink:0}}>{c.pkts.toLocaleString()}</span>
+                </div>
+              </div>
+            ))}
+          </Card>
+        </div>
+      </div>
+    </PageWrap>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   SETTINGS
+═══════════════════════════════════════════════════════════ */
+function SettingsPage() {
+  const [tab, setTab] = useState('General');
+  const [cfg, setCfg] = useState({fw:true,autoStart:true,stealth:false,defAction:'Deny',emailAlerts:true,slackAlerts:false,threshold:'High',intrusion:true,geoBlock:false,deepInspect:true,rateLimit:true,logLevel:'Info',logRetention:'30'});
+  const tog = k => setCfg(c=>({...c,[k]:!c[k]}));
+  const tabs = ['General','Security','Notifications','Logging','System'];
+
+  const SRow = ({label,desc,k}) => (
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'13px 0',borderBottom:`1px solid ${C.b0}`}}>
+      <div>
+        <div style={{fontSize:13,color:C.text,marginBottom:2}}>{label}</div>
+        {desc && <div style={{fontSize:11,color:C.muted}}>{desc}</div>}
+      </div>
+      <Toggle checked={cfg[k]} onChange={()=>tog(k)}/>
+    </div>
+  );
+
+  const sysInfo=[
+    ['Firewall Version','1.0.0'],['Last Updated','May 27, 2024  12:30 PM'],
+    ['Uptime','5d 14h 32m'],['Total Packets Processed','2,547,792'],
+    ['Database Size','45.2 MB'],['CPU Usage','12.4%'],['Memory','234 MB / 2 GB'],
+  ];
+
+  return (
+    <PageWrap>
+      <PageTitle title="SETTINGS" sub="Configure your firewall settings and preferences"/>
+      {/* Tabs */}
+      <div style={{display:'flex',gap:3,marginBottom:20,background:C.bg2,borderRadius:10,padding:5,border:`1px solid ${C.b0}`,width:'fit-content'}}>
+        {tabs.map(t=>(
+          <button key={t} onClick={()=>setTab(t)} style={{padding:'7px 16px',borderRadius:7,border:`1px solid ${t===tab?C.b1:'transparent'}`,background:t===tab?'rgba(0,212,255,0.1)':'transparent',color:t===tab?C.cyan:C.dim,fontSize:12,fontWeight:t===tab?600:400,cursor:'pointer',transition:'all 0.2s'}}>
+            {t}
+          </button>
+        ))}
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'1.5fr 1fr',gap:14}}>
+        <Card>
+          {tab==='General' && <>
+            <div style={{...orb,fontSize:12,color:C.cyan,letterSpacing:'1.5px',marginBottom:4}}>GENERAL SETTINGS</div>
+            <div style={{height:1,background:`linear-gradient(90deg,${C.cyan},transparent)`,marginBottom:16}}/>
+            <SRow label="Enable Firewall"  desc="Master toggle for all firewall protection" k="fw"/>
+            <SRow label="Auto Start"       desc="Start firewall automatically on system boot" k="autoStart"/>
+            <SRow label="Stealth Mode"     desc="Hide firewall presence from network scans"  k="stealth"/>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'13px 0'}}>
+              <div><div style={{fontSize:13,color:C.text,marginBottom:2}}>Default Action</div><div style={{fontSize:11,color:C.muted}}>Applied to unmatched packets</div></div>
+              <select value={cfg.defAction} onChange={e=>setCfg(c=>({...c,defAction:e.target.value}))} style={inputStyle({minWidth:120})}>
+                <option>Allow</option><option>Deny</option><option>Reject</option>
+              </select>
+            </div>
+          </>}
+          {tab==='Security' && <>
+            <div style={{...orb,fontSize:12,color:C.cyan,letterSpacing:'1.5px',marginBottom:4}}>SECURITY SETTINGS</div>
+            <div style={{height:1,background:`linear-gradient(90deg,${C.cyan},transparent)`,marginBottom:16}}/>
+            <SRow label="Intrusion Detection"     desc="Detect and block intrusion attempts automatically" k="intrusion"/>
+            <SRow label="Geo Blocking"            desc="Block traffic from high-risk geographic regions"  k="geoBlock"/>
+            <SRow label="Deep Packet Inspection"  desc="Analyze packet payload for hidden threats"        k="deepInspect"/>
+            <SRow label="Rate Limiting"           desc="Throttle excessive connections per source IP"     k="rateLimit"/>
+          </>}
+          {tab==='Notifications' && <>
+            <div style={{...orb,fontSize:12,color:C.cyan,letterSpacing:'1.5px',marginBottom:4}}>NOTIFICATION SETTINGS</div>
+            <div style={{height:1,background:`linear-gradient(90deg,${C.cyan},transparent)`,marginBottom:16}}/>
+            <SRow label="Email Alerts"       desc="Send threat alerts to configured email address" k="emailAlerts"/>
+            <SRow label="Slack Notifications" desc="Post alerts to your Slack workspace"           k="slackAlerts"/>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'13px 0',borderBottom:`1px solid ${C.b0}`}}>
+              <div><div style={{fontSize:13,color:C.text}}>Alert Threshold</div><div style={{fontSize:11,color:C.muted}}>Minimum severity for notifications</div></div>
+              <select value={cfg.threshold} onChange={e=>setCfg(c=>({...c,threshold:e.target.value}))} style={inputStyle({minWidth:120})}>
+                <option>Low</option><option>Medium</option><option>High</option><option>Critical</option>
+              </select>
+            </div>
+          </>}
+          {tab==='Logging' && <>
+            <div style={{...orb,fontSize:12,color:C.cyan,letterSpacing:'1.5px',marginBottom:4}}>LOGGING SETTINGS</div>
+            <div style={{height:1,background:`linear-gradient(90deg,${C.cyan},transparent)`,marginBottom:16}}/>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'13px 0',borderBottom:`1px solid ${C.b0}`}}>
+              <div><div style={{fontSize:13,color:C.text}}>Log Level</div><div style={{fontSize:11,color:C.muted}}>Verbosity of log output</div></div>
+              <select value={cfg.logLevel} onChange={e=>setCfg(c=>({...c,logLevel:e.target.value}))} style={inputStyle({minWidth:120})}>
+                <option>Debug</option><option>Info</option><option>Warning</option><option>Error</option>
+              </select>
+            </div>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'13px 0'}}>
+              <div><div style={{fontSize:13,color:C.text}}>Log Retention (days)</div><div style={{fontSize:11,color:C.muted}}>How long to keep log entries</div></div>
+              <input value={cfg.logRetention} onChange={e=>setCfg(c=>({...c,logRetention:e.target.value}))} type="number" min="1" max="365" style={inputStyle({maxWidth:80,textAlign:'center'})}/>
+            </div>
+          </>}
+          {tab==='System' && <>
+            <div style={{...orb,fontSize:12,color:C.cyan,letterSpacing:'1.5px',marginBottom:4}}>SYSTEM INFORMATION</div>
+            <div style={{height:1,background:`linear-gradient(90deg,${C.cyan},transparent)`,marginBottom:16}}/>
+            {sysInfo.map(([k,v],i)=>(
+              <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'10px 0',borderBottom:i<sysInfo.length-1?`1px solid ${C.b0}`:'none'}}>
+                <span style={{fontSize:12,color:C.dim}}>{k}</span>
+                <span style={{fontSize:12,color:C.text,...mono}}>{v}</span>
+              </div>
+            ))}
+          </>}
+          <div style={{marginTop:20,display:'flex',gap:10}}>
+            <button style={{background:`linear-gradient(135deg,${C.cyan},#0088bb)`,border:'none',borderRadius:8,color:'#001520',padding:'9px 22px',...orb,fontSize:10,fontWeight:700,letterSpacing:'1px',cursor:'pointer'}}>SAVE CHANGES</button>
+            <button style={{background:'transparent',border:`1px solid ${C.b1}`,borderRadius:8,color:C.dim,padding:'9px 18px',fontSize:12,cursor:'pointer'}}>Reset Defaults</button>
+          </div>
+        </Card>
+
+        <div style={{display:'flex',flexDirection:'column',gap:14}}>
+          <Card>
+            <div style={{...orb,fontSize:13,fontWeight:700,marginBottom:14}}>Service Status</div>
+            {[
+              {l:'Firewall Engine',    s:'Running',    c:C.green},
+              {l:'Packet Inspector',  s:'Active',     c:C.green},
+              {l:'Threat Database',   s:'Up to date', c:C.green},
+              {l:'Geo-IP Service',    s:'Disabled',   c:C.muted},
+              {l:'Logging Service',   s:'Running',    c:C.green},
+            ].map((x,i)=>(
+              <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:i<4?`1px solid ${C.b0}`:'none'}}>
+                <span style={{fontSize:12,color:C.dim}}>{x.l}</span>
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  <div style={{width:7,height:7,borderRadius:'50%',background:x.c,boxShadow:`0 0 5px ${x.c}`}}/>
+                  <span style={{fontSize:11,color:x.c,...mono}}>{x.s}</span>
+                </div>
+              </div>
+            ))}
+          </Card>
+          <Card>
+            <div style={{...orb,fontSize:13,fontWeight:700,marginBottom:14}}>Resource Usage</div>
+            {[{l:'CPU',v:12,c:C.cyan},{l:'Memory',v:23,c:C.green},{l:'Disk I/O',v:8,c:C.orange},{l:'Network',v:61,c:C.purple}].map((r,i)=>(
+              <div key={i} style={{marginBottom:13}}>
+                <div style={{display:'flex',justifyContent:'space-between',marginBottom:4,fontSize:11}}>
+                  <span style={{color:C.dim,...mono}}>{r.l}</span>
+                  <span style={{color:r.c,fontWeight:600,...mono}}>{r.v}%</span>
+                </div>
+                <div style={{height:5,background:'rgba(255,255,255,0.07)',borderRadius:3}}>
+                  <div style={{height:'100%',width:`${r.v}%`,background:`linear-gradient(90deg,${r.c},${r.c}88)`,borderRadius:3,boxShadow:`0 0 5px ${r.c}55`,transition:'width 0.6s ease-out'}}/>
+                </div>
+              </div>
+            ))}
+          </Card>
+        </div>
+      </div>
+    </PageWrap>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   LOGS
+═══════════════════════════════════════════════════════════ */
+function LogsPage() {
+  const typeColor = {INFO:C.cyan,WARN:C.orange,ERROR:C.red,BLOCK:C.red,ALLOW:C.green};
+  const [filter,  setFilter ] = useState('All');
+  const [logs] = useState(()=>Array.from({length:35},(_,i)=>{
+    const types=['INFO','WARN','ERROR','BLOCK','ALLOW'];
+    const msgs=['Packet filtered','Rule matched','Threat detected','Connection blocked','DNS query allowed','SSH attempt blocked','Geo-block applied','Rate limit exceeded','DPI inspection complete','System health check OK'];
+    const t = types[ri(0,types.length-1)];
+    const d = new Date(Date.now()-i*ri(25000,160000));
+    return {id:i, time:d.toLocaleString('en-US',{hour12:false}), type:t, msg:rp(msgs), src:rp(SAMPLE_IPS), rule:`Rule #${ri(1,7)}`};
+  }));
+
+  const shown = filter==='All' ? logs : logs.filter(l=>l.type===filter);
+  return (
+    <PageWrap>
+      <PageTitle title="LOGS" sub="System and security event logs"/>
+      <Card style={{padding:0,overflow:'hidden'}}>
+        <div style={{padding:'11px 14px',borderBottom:`1px solid ${C.b0}`,display:'flex',gap:8,flexWrap:'wrap'}}>
+          {['All','INFO','WARN','ERROR','BLOCK','ALLOW'].map(t=>(
+            <button key={t} onClick={()=>setFilter(t)} style={{padding:'4px 13px',borderRadius:6,border:`1px solid ${filter===t?(typeColor[t]||C.b2):C.b0}`,background:filter===t?`${typeColor[t]||C.b0}18`:'transparent',color:filter===t?(typeColor[t]||C.cyan):C.dim,fontSize:11,cursor:'pointer',transition:'all 0.2s'}}>
+              {t}
+            </button>
+          ))}
+          <span style={{marginLeft:'auto',fontSize:11,color:C.muted,alignSelf:'center',...mono}}>{shown.length} entries</span>
+        </div>
+        <div style={{maxHeight:480,overflowY:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse'}}>
+            <thead style={{position:'sticky',top:0,background:'rgba(0,12,26,0.99)'}}>
+              <tr>{['Timestamp','Level','Message','Source IP','Rule'].map(h=><th key={h} style={{textAlign:'left',padding:'9px 12px',fontSize:10,color:C.dim,letterSpacing:'1px',textTransform:'uppercase',borderBottom:`1px solid ${C.b0}`,...mono,whiteSpace:'nowrap'}}>{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {shown.map(l=>{
+                const col = typeColor[l.type]||C.dim;
+                return (
+                  <tr key={l.id} onMouseEnter={e=>e.currentTarget.style.background='rgba(0,212,255,0.025)'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                    <td style={{padding:'8px 12px',color:C.muted,...mono,fontSize:11,borderBottom:`1px solid rgba(0,212,255,0.04)`,whiteSpace:'nowrap'}}>{l.time}</td>
+                    <td style={{padding:'8px 12px',borderBottom:`1px solid rgba(0,212,255,0.04)`}}><span style={{color:col,...mono,fontSize:10,fontWeight:700,background:`${col}15`,border:`1px solid ${col}30`,borderRadius:4,padding:'2px 7px'}}>{l.type}</span></td>
+                    <td style={{padding:'8px 12px',fontSize:12,color:C.text,borderBottom:`1px solid rgba(0,212,255,0.04)`}}>{l.msg}</td>
+                    <td style={{padding:'8px 12px',color:C.cyan,...mono,fontSize:11,borderBottom:`1px solid rgba(0,212,255,0.04)`,whiteSpace:'nowrap'}}>{l.src}</td>
+                    <td style={{padding:'8px 12px',color:C.muted,...mono,fontSize:11,borderBottom:`1px solid rgba(0,212,255,0.04)`}}>{l.rule}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </PageWrap>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   ROOT APP
+═══════════════════════════════════════════════════════════ */
+function App() {
+  const [authed, setAuthed] = useState(false);
+  const [page,   setPage  ] = useState('landing');
+
+  // Set Chart.js defaults once
+  useEffect(()=>{ ChartDefaults(); },[]);
+
+  if(!authed) return <LoginPage onLogin={()=>{ setAuthed(true); setPage('dashboard'); }}/>;
+  if(page==='landing') return <LandingPage onLaunch={()=>setPage('dashboard')}/>;
+
+  const pages = {
+    dashboard: <DashboardPage/>,
+    monitor:   <LiveMonitorPage/>,
+    rules:     <FirewallRulesPage/>,
+    analytics: <AnalyticsPage/>,
+    map:       <NetworkMapPage/>,
+    settings:  <SettingsPage/>,
+    logs:      <LogsPage/>,
+  };
+
+  return (
+    <AppLayout page={page} setPage={setPage}>
+      {pages[page] || <DashboardPage/>}
+    </AppLayout>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
